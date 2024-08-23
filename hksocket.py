@@ -1,35 +1,75 @@
 import asyncio
 import os
+from queue import Queue
+import threading
 import websockets
 import json
 
-async def connect_to_server():
-    uri = "ws://localhost:8645"
-    async with websockets.connect(uri) as websocket:
-        print("Connected to server")
-        try:
-            while True:
-                message = await websocket.recv()
-                try:
-                    data = json.loads(message)
-                    print(data.keys())
-                    if 'terrainSegmentation' in data:
-                        segmentation = data['terrainSegmentation']
-                        print(f'Segmentation for {data["sceneName"]}', data['terrainSegmentation'])
-                        segmentationFileContents = f'terrain = {segmentation}'
-                        segmentationFilePath = f'segmentations/{data["sceneName"]}.py'
-                        if not os.path.exists(segmentationFilePath):
-                            try:
-                                with open(segmentationFilePath, 'w') as file:
-                                    file.write(segmentationFileContents)
-                            except:
-                                print(f'Could not open file, {segmentationFilePath}')
-                except:
-                    print(f"Received non-json: {message}")
-                    continue
+socket_task_status = 'unused'
+socket_thread = None
+event_queue = Queue()
+connected_event = threading.Event()
 
-        except websockets.ConnectionClosed:
-            print("Connection closed")
+async def connect_to_server():
+    global socket_task_status
+    uri = "ws://localhost:8645"
+    try: 
+        async with websockets.connect(uri) as websocket:
+            print("Connected to server")
+            connected_event.set()
+            try:
+                while socket_task_status == 'running':
+                    message = await websocket.recv()
+                    try:
+                        data = json.loads(message)
+                        event_queue.put(data)
+                    except:
+                        print(f"Received non-json: {message}")
+                        continue
+                print('The server loop has ended')
+
+            except websockets.ConnectionClosed:
+                print("Connection closed")
+            except Exception as e:
+                print('Unexpected exception', e)
+                return
+    except ConnectionRefusedError:
+        print(f'The connection to {uri} was refused')
+        socket_task_status = 'failed'
+        connected_event.set()
+    except Exception as e:
+        socket_task_status = 'failed'
+        connected_event.set()
+        print('Unexpected exception', e)
+        return
+    
+def websocket_server_thread():
+    global socket_thread, socket_task_status
+    socket_task_status = 'running'
+    asyncio.run(connect_to_server())
+    if socket_task_status == 'running':
+        socket_task_status = 'completed'
+    print('Socket thread is terminating gracefully')
+    socket_thread = None
+
+def run_websocket_server():
+    global socket_task_status, socket_thread
+    if socket_task_status == 'running' or socket_thread is not None:
+        print('Cannot start server: websocket server is already running')
+        return
+    socket_thread = threading.Thread(target=websocket_server_thread, daemon=True)
+    socket_thread.start()
+
+def stop_websocket_server():
+    global socket_task_status, socket_thread
+    if socket_task_status != 'running' and socket_thread is None:
+        print('Cannot stop server: there is no server being run')
+        return
+    socket_task_status = 'stopped'
+
+def is_server_running():
+    global socket_task_status, socket_thread
+    return socket_task_status == 'running' and socket_thread is not None
 
 if __name__ == "__main__":
-    asyncio.run(connect_to_server())
+    run_websocket_server()
