@@ -1,6 +1,5 @@
 from collections import deque
 
-
 class Region:
     ALL_ABOVE = 0
     EMPTY = 1
@@ -29,6 +28,9 @@ class Region:
             set()
         ]
         self.overlapping_regions = set()
+
+    def __repr__(self) -> str:
+        return f'Region[({self.x_min},{self.y_min}),({self.x_max},{self.y_max});{self.region_type};{self.over_floor}]'
 
     def set_over_floor(self, over_floor):
         self.over_floor = over_floor
@@ -188,6 +190,20 @@ class Region:
                 if is_safe is not None:
                     return is_safe, final_region, final_point
         return False, self, (ex, ey)
+    
+    def ray_collide_neighbor(self, point1, point2):
+        if not self.contains(*point1):
+            return None, *point1, None
+        if self.contains(*point2):
+            return None, *point2, None
+        dx = point2[0] - point1[0]
+        dy = point2[1] - point1[1]
+        edge, ex, ey = self.ray_to_edge(*point1, dx, dy)
+        bound_coord = ex if (edge % 2) == 0 else ey
+        for border_region, min_bound, max_bound in self.bordering_regions[edge]:
+            if min_bound <= bound_coord <= max_bound and border_region.region_type == Region.EMPTY:
+                return border_region, ex, ey, edge
+        return None, ex, ey, edge
     
 # algorithm for clipping a line segment to a box
 def liang_barsky(x0, y0, x1, y1, xmin, ymin, xmax, ymax):

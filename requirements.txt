@@ -1,0 +1,5 @@
+numpy
+pyclipr
+opencv-python
+pygame
+websockets
