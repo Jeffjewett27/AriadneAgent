@@ -1,224 +1,193 @@
-import pywinauto
+import multiprocessing
+import time
 from pywinauto.application import Application
 from time import sleep
-import multiprocessing
+from typing import List, Tuple
 
-
-def get_hollow_knight_window():
-    window_name = "Hollow Knight"
-    try:
-        # Connect to an already running application window by its title
-        app = Application().connect(title=window_name)
-
-        # Get the window handle
-        window = app.window(title=window_name)
-
-        # Send the keystrokes directly to the window
-        # print(f"Sent keystrokes '{keys}' to '{window_name}' without bringing it to focus.")
-    except Exception as e:
-        window = None
-        print(f"Could not find window '{window_name}': {e}")
-    return window
-
-
-hollow_knight_window = None
-control_queue = multiprocessing.Queue()
-control_process = None
-controls_pressed = [
-    False,  # up=0
-    False,  # left=1
-    False,  # down=2
-    False,  # right=3
-    False,  # jump=4
-    False,  # attack=5
-    False,  # dash=6
+# -----------------------------------------------------------------------------
+# Configuration: adjust if your key bindings differ
+# -----------------------------------------------------------------------------
+# Human‑readable mapping for each control index:
+#  0=up, 1=left, 2=down, 3=right, 4=jump, 5=attack, 6=dash
+KEY_STRINGS = [
+    "{UP}",  # up
+    "{LEFT}",  # left
+    "{DOWN}",  # down
+    "{RIGHT}",  # right
+    "z",  # jump
+    "x",  # attack
+    "c",  # dash (example)
+]
+# Versions for "key down" events
+# KEY_STRINGS_DOWN = [k if k.startswith("{") else k.upper() for k in KEY_STRINGS]
+KEY_STRINGS_DOWN = [
+    k.replace("}", " down}") if k.startswith("{") else f"{{{k} down}}"
+    for k in KEY_STRINGS
 ]
 
+# -----------------------------------------------------------------------------
+# IPC Protocol
+# -----------------------------------------------------------------------------
+FRAME = "FRAME"  # tag for a full 7‑bool snapshot
+SHUTDOWN = "EXIT"  # tag to cleanly shut down the control process
 
-def require_window():
+# -----------------------------------------------------------------------------
+# Shared state and IPC queue
+# -----------------------------------------------------------------------------
+control_process: multiprocessing.Process | None = None
+control_queue = multiprocessing.Queue()
+# This list is the authoritative state for each frame.
+controls_pressed: List[bool] = [False] * len(KEY_STRINGS)
+
+hollow_knight_window = None  # will hold the pywinauto WindowSpecification
+
+
+def tick_controls():
+    frame_state = controls_pressed.copy()
+    control_queue.put((FRAME, frame_state))
+
+
+# -----------------------------------------------------------------------------
+# Window discovery
+# -----------------------------------------------------------------------------
+def get_hollow_knight_window():
     global hollow_knight_window
-    if hollow_knight_window is None:
-        hollow_knight_window = get_hollow_knight_window()
+    window_name = "Hollow Knight"
+    try:
+        app = Application().connect(title=window_name)
+        hollow_knight_window = app.window(title=window_name)
+    except Exception as e:
+        hollow_knight_window = None
+        print(f"Could not find window '{window_name}': {e}")
     return hollow_knight_window is not None
 
 
+def require_window() -> bool:
+    if hollow_knight_window is None:
+        return get_hollow_knight_window()
+    return True
+
+
+# -----------------------------------------------------------------------------
+# Control functions: ONLY mutate controls_pressed[], no queue.put() here
+# -----------------------------------------------------------------------------
 def press_up():
-    if controls_pressed[0]:
-        return
     controls_pressed[0] = True
-    control_queue.put("press_up")
 
 
 def release_up():
-    if not controls_pressed[0]:
-        return
     controls_pressed[0] = False
-    control_queue.put("release_up")
-
-
-def press_down():
-    if controls_pressed[2]:
-        return
-    controls_pressed[2] = True
-    control_queue.put("press_down")
-
-
-def release_down():
-    if not controls_pressed[2]:
-        return
-    controls_pressed[2] = False
-    control_queue.put("release_down")
 
 
 def press_left():
-    if controls_pressed[1]:
-        return
     controls_pressed[1] = True
-    control_queue.put("press_left")
 
 
 def release_left():
-    if not controls_pressed[1]:
-        return
     controls_pressed[1] = False
-    control_queue.put("release_left")
+
+
+def press_down():
+    controls_pressed[2] = True
+
+
+def release_down():
+    controls_pressed[2] = False
 
 
 def press_right():
-    if controls_pressed[3]:
-        return
     controls_pressed[3] = True
-    control_queue.put("press_right")
 
 
 def release_right():
-    if not controls_pressed[3]:
-        return
     controls_pressed[3] = False
-    control_queue.put("release_right")
 
 
 def press_jump():
-    if controls_pressed[4]:
-        return
     controls_pressed[4] = True
-    control_queue.put("press_jump")
 
 
 def release_jump():
-    if not controls_pressed[4]:
-        return
     controls_pressed[4] = False
-    control_queue.put("release_jump")
-
-
-def attack():
-    control_queue.put("attack")
 
 
 def press_attack():
-    if controls_pressed[5]:
-        return
     controls_pressed[5] = True
-    control_queue.put("press_attack")
 
 
 def release_attack():
-    if not controls_pressed[5]:
-        return
     controls_pressed[5] = False
-    control_queue.put("release_attack")
-
-
-def dash():
-    control_queue.put("dash")
 
 
 def press_dash():
-    if controls_pressed[6]:
-        return
     controls_pressed[6] = True
-    control_queue.put("press_dash")
 
 
 def release_dash():
-    if not controls_pressed[6]:
-        return
     controls_pressed[6] = False
-    control_queue.put("release_dash")
 
 
-def test_move():
-    import time
-
-    for _ in range(2):
-        press_right()
-        time.sleep(1)
-        release_right()
-        press_left()
-        time.sleep(1)
-        release_left()
+def set_controls_pressed(new_controls: list[bool]):
+    assert len(new_controls) == len(controls_pressed)
+    for i, val in enumerate(new_controls):
+        controls_pressed[i] = val
 
 
-def handle_controls(event_queue):
-    success = require_window()
-    if not success:
+# -----------------------------------------------------------------------------
+# Control‐process entrypoint: consumes whole-frame state packets
+# -----------------------------------------------------------------------------
+def handle_controls(event_queue: multiprocessing.Queue):
+    # Ensure we have a window handle before processing frames
+    if not require_window():
         return
+
+    prev_state = [False] * len(KEY_STRINGS)
+    down_times = [0] * len(KEY_STRINGS)
 
     while True:
-        task = event_queue.get()
-        # Execute the task (a method in this case)
-        match task:
-            case "EXIT":
-                break
-            case "press_up":
-                hollow_knight_window.send_keystrokes("{UP down}")
-            case "release_up":
-                hollow_knight_window.send_keystrokes("{UP}")
-            case "press_down":
-                hollow_knight_window.send_keystrokes("{DOWN down}")
-            case "release_down":
-                hollow_knight_window.send_keystrokes("{DOWN}")
-            case "press_left":
-                hollow_knight_window.send_keystrokes("{LEFT down}")
-            case "release_left":
-                hollow_knight_window.send_keystrokes("{LEFT}")
-            case "press_right":
-                hollow_knight_window.send_keystrokes("{RIGHT down}")
-            case "release_right":
-                hollow_knight_window.send_keystrokes("{RIGHT}")
-            case "press_jump":
-                hollow_knight_window.send_keystrokes("{z down}")
-            case "release_jump":
-                hollow_knight_window.send_keystrokes("z")
-            case "press_attack":
-                hollow_knight_window.send_keystrokes("{x down}")
-            case "release_attack":
-                hollow_knight_window.send_keystrokes("x")
-            case "attack":
-                hollow_knight_window.send_keystrokes("x")
-
-            case _:
-                pass
+        tag, payload = event_queue.get()
+        if tag == SHUTDOWN:
+            break
+        if tag == FRAME:
+            new_state: List[bool] = payload
+            # For each control, compare prev vs now and send key down/up
+            for i, (was, now) in enumerate(zip(prev_state, new_state)):
+                if was == now:
+                    continue
+                down_str = ""
+                if now:
+                    # key pressed this frame
+                    ks = KEY_STRINGS_DOWN[i]
+                    down_times[i] = time.time()
+                else:
+                    # key released this frame
+                    ks = KEY_STRINGS[i]
+                    down_str = str(down_times[i] - time.time())
+                print("keystroke ", ks, down_str)
+                try:
+                    hollow_knight_window.send_keystrokes(ks)
+                except Exception as e:
+                    print(f"Error sending keystroke '{ks}': {e}")
+            prev_state = new_state
 
 
+# -----------------------------------------------------------------------------
+# Lifecycle helpers
+# -----------------------------------------------------------------------------
 def start_control_process():
     global control_process
+    """Spawn the control process to consume frame packets."""
+    if control_process is not None:
+        print("control process already started")
+        return
     control_process = multiprocessing.Process(
         target=handle_controls, args=(control_queue,), daemon=True
     )
     control_process.start()
 
 
-def stop_control_process():
-    control_queue.put("EXIT")
+def stop_control_process(): 
+    """Shutdown the control process cleanly."""
+    control_queue.put((SHUTDOWN, None))
     control_process.join()
     control_process.close()
-
-
-if __name__ == "__main__":
-    import time
-
-    press_left()
-    time.sleep(1)
-    release_left()

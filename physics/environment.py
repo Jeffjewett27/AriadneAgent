@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import numpy as np
+from shapely import GeometryCollection, MultiLineString, MultiPoint
 from shapely.geometry import LineString, box, Point, Polygon
 from shapely.geometry.polygon import orient
 from shapely.strtree import STRtree
@@ -7,7 +8,6 @@ from shapely.strtree import STRtree
 
 @dataclass
 class Segment:
-    index: int
     x_min: float
     y_min: float
     x_max: float
@@ -16,6 +16,9 @@ class Segment:
     line_string: LineString
     type: str
     polygon: Polygon
+
+    def __hash__(self):
+        return hash((self.x_min, self.x_max, self.y_min, self.y_max, self.type))
 
 
 class Terrain:
@@ -64,7 +67,6 @@ class Terrain:
                     seg_type = "right_wall"
 
                 segment_info = Segment(
-                    len(self.segments),
                     x1,
                     y1,
                     x2,
@@ -154,7 +156,7 @@ class Terrain:
             return True, hit_point.x, hit_point.y, hit_infos
 
         return False, None, None, None
-    
+
     def integrate_motion(
         self,
         pos: np.ndarray,
@@ -176,7 +178,7 @@ class Terrain:
         speed = np.linalg.norm(vel)
         if dt <= epsilon or speed <= epsilon:
             return False, pos, vel, []
-        
+
         pos_next = pos + vel * dt
 
         # Broad phase AABB collision
@@ -200,6 +202,15 @@ class Terrain:
             pts = []
             if isinstance(inter, Point):
                 pts = [inter]
+            elif isinstance(inter, (MultiPoint, MultiLineString, GeometryCollection)):
+                # iterate each sub‐geometry
+                for geom in inter.geoms:
+                    if isinstance(geom, Point):
+                        pts.append(geom)
+                    else:
+                        # e.g. LineString
+                        for x, y in geom.coords:
+                            pts.append(Point(x, y))
             else:
                 pts = [Point(x, y) for x, y in inter.coords]
 
@@ -218,6 +229,7 @@ class Terrain:
                 ):
                     hit_segments.append(self.segments[idx])
 
+        orig_vel_mag = np.linalg.norm(vel)
         # Augment the motion to slide along colliding surfaces
         if hit_point is not None:
             hit_point = np.array([hit_point.x, hit_point.y])
@@ -228,31 +240,34 @@ class Terrain:
                 v_dot = np.dot(vel, hit_info.normal)
                 vel = vel - hit_info.normal * v_dot
 
-            if t_left > epsilon and np.linalg.norm(vel) > epsilon:
-                # assert t_left < dt, "t_left should strictly decrease"
+            if (
+                epsilon < t_left
+                and np.linalg.norm(vel) > epsilon
+                and (t_left < dt or np.linalg.norm(vel) < orig_vel_mag)
+            ):
+                # progress needs to be made either on distance or velocity
                 return self.integrate_motion(hit_point, vel, t_left)
-            
+
             return True, hit_point, vel, hit_segments
 
         return False, pos_next, vel, []
 
-    def find_touching_segments(self,
-                           pos: np.ndarray,
-                           epsilon: float = 1e-6
-                          ) -> list[Segment]:
+    def find_touching_segments(
+        self, pos: np.ndarray, epsilon: float = 1e-6
+    ) -> list[Segment]:
         """
         Returns a list of all segments whose distance
         to the point `pos` is <= epsilon.
         """
         pt = Point(pos[0], pos[1])
-        candidate_idxs = self.str_tree.query(pt)
-        
+        candidate_idxs = self.str_tree.query(pt, predicate="dwithin", distance=epsilon)
+
         touching = []
         for idx in candidate_idxs:
             seg = self.segments[idx]
             line = seg.line_string
-            
+
             if line.distance(pt) <= epsilon:
                 touching.append(seg)
-        
+
         return touching

@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from enum import Enum
 
@@ -57,3 +58,6 @@ class HeroControllerStates:
     @property
     def recoilHorizontal(self):
         return self.recoil_dy == 0
+    
+    def copy(self):
+        return copy.copy(self)

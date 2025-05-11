@@ -239,7 +239,7 @@ public class HeroController : MonoBehaviour
 
 	// private float attackDuration;
 
-    // ???
+	// ???
 	// private Vector2 recoilVector;
 
 	private GameManager gm;
@@ -256,7 +256,7 @@ public class HeroController : MonoBehaviour
 
 	private InputHandler inputHandler;
 
-    // ???
+	// ???
 	// private bool hardLanded;
 
 	private int jumpQueueSteps;
@@ -289,7 +289,7 @@ public class HeroController : MonoBehaviour
 
 	// private bool doubleJumped;
 
-    // true when currentWalljumpSpeed != 0
+	// true when currentWalljumpSpeed != 0
 	// public bool wallLocked;
 
 	// private int ledgeBufferSteps;
@@ -297,11 +297,11 @@ public class HeroController : MonoBehaviour
 
 	// public float fallTimer { get; private set; }
 
-    // constant
+	// constant
 	// private float walljumpSpeedDecel;
 	// private float nailChargeTime;
 
-    // ignored
+	// ignored
 	// private bool recoilLarge;
 	// public float conveyorSpeed;
 	// public float conveyorSpeedV;
@@ -325,14 +325,14 @@ public class HeroController : MonoBehaviour
 		{
 			ResetMotion();
 		}
-        else if (hero_state == ActorStates.no_input)
-        {
-            if (cState.recoiling)
-            {
-                AffectedByGravity(gravityApplies: false);
-                rb2d.velocity = recoilVector;
-            }
-        }
+		else if (hero_state == ActorStates.no_input)
+		{
+			if (cState.recoiling)
+			{
+				AffectedByGravity(gravityApplies: false);
+				rb2d.velocity = recoilVector;
+			}
+		}
 		else if (hero_state != ActorStates.no_input)
 		{
 			if (hero_state == ActorStates.running)
@@ -564,7 +564,7 @@ public class HeroController : MonoBehaviour
 		}
 		if (!cState.wallSliding)
 		{
-            if (inAcid)
+			if (inAcid)
 			{
 				rb2d.velocity = new Vector2(move_direction * UNDERWATER_SPEED, rb2d.velocity.y);
 			}
@@ -658,12 +658,12 @@ public class HeroController : MonoBehaviour
 		{
 			switch (attackDir)
 			{
-			case AttackDirection.upward:
-				slashFsm.FsmVariables.GetFsmFloat("direction").Value = 90f;
-				break;
-			case AttackDirection.downward:
-				slashFsm.FsmVariables.GetFsmFloat("direction").Value = 270f;
-				break;
+				case AttackDirection.upward:
+					slashFsm.FsmVariables.GetFsmFloat("direction").Value = 90f;
+					break;
+				case AttackDirection.downward:
+					slashFsm.FsmVariables.GetFsmFloat("direction").Value = 270f;
+					break;
 			}
 		}
 	}
@@ -734,45 +734,45 @@ public class HeroController : MonoBehaviour
 
 	public void TakeDamage(GameObject go, CollisionSide damageSide, int damageAmount, int hazardType)
 	{
-        if ((damageMode == DamageMode.HAZARD_ONLY && hazardType == 1) || (cState.shadowDashing && hazardType == 1) || (parryInvulnTimer > 0f && hazardType == 1))
-        {
-            return;
-        }
-        CancelAttack();
-        if (cState.wallSliding)
-        {
-            cState.wallSliding = false;
-        }
-        if (cState.touchingWall)
-        {
-            cState.touchingWall = false;
-        }
-        if (cState.recoilingLeft || cState.recoilingRight)
-        {
-            CancelRecoilHorizontal();
-        }
-        if (cState.bouncing)
-        {
-            CancelBounce();
-            rb2d.velocity = new Vector2(rb2d.velocity.x, 0f);
-        }
-        if (cState.shroomBouncing)
-        {
-            CancelBounce();
-            rb2d.velocity = new Vector2(rb2d.velocity.x, 0f);
-        }
-        if (cState.nailCharging || nailChargeTimer != 0f)
-        {
-            cState.nailCharging = false;
-            nailChargeTimer = 0f;
-        }
-        switch (hazardType)
-        {
-        // case 2, 3, 4, 5: diefromhazard
-        default:
-            StartCoroutine(StartRecoil(damageSide, spawnDamageEffect, damageAmount));
-            break;
-        }
+		if ((damageMode == DamageMode.HAZARD_ONLY && hazardType == 1) || (cState.shadowDashing && hazardType == 1) || (parryInvulnTimer > 0f && hazardType == 1))
+		{
+			return;
+		}
+		CancelAttack();
+		if (cState.wallSliding)
+		{
+			cState.wallSliding = false;
+		}
+		if (cState.touchingWall)
+		{
+			cState.touchingWall = false;
+		}
+		if (cState.recoilingLeft || cState.recoilingRight)
+		{
+			CancelRecoilHorizontal();
+		}
+		if (cState.bouncing)
+		{
+			CancelBounce();
+			rb2d.velocity = new Vector2(rb2d.velocity.x, 0f);
+		}
+		if (cState.shroomBouncing)
+		{
+			CancelBounce();
+			rb2d.velocity = new Vector2(rb2d.velocity.x, 0f);
+		}
+		if (cState.nailCharging || nailChargeTimer != 0f)
+		{
+			cState.nailCharging = false;
+			nailChargeTimer = 0f;
+		}
+		switch (hazardType)
+		{
+			// case 2, 3, 4, 5: diefromhazard
+			default:
+				StartCoroutine(StartRecoil(damageSide, spawnDamageEffect, damageAmount));
+				break;
+		}
 	}
 
 	public void Bounce()
@@ -1152,7 +1152,7 @@ public class HeroController : MonoBehaviour
 
 	private void DoDoubleJump()
 	{
-        cState.jumping = false;
+		cState.jumping = false;
 		cState.doubleJumping = true;
 		jumped_steps = 0;
 		doubleJumped = true;
@@ -1284,23 +1284,23 @@ public class HeroController : MonoBehaviour
 		AffectedByGravity(gravityApplies: false);
 		switch (impactSide)
 		{
-		case CollisionSide.left:
-			recoilVector = new Vector2(RECOIL_VELOCITY, RECOIL_VELOCITY * 0.5f);
-			if (cState.facingRight)
-			{
-				FlipSprite();
-			}
-			break;
-		case CollisionSide.right:
-			recoilVector = new Vector2(0f - RECOIL_VELOCITY, RECOIL_VELOCITY * 0.5f);
-			if (!cState.facingRight)
-			{
-				FlipSprite();
-			}
-			break;
-		default:
-			recoilVector = Vector2.zero;
-			break;
+			case CollisionSide.left:
+				recoilVector = new Vector2(RECOIL_VELOCITY, RECOIL_VELOCITY * 0.5f);
+				if (cState.facingRight)
+				{
+					FlipSprite();
+				}
+				break;
+			case CollisionSide.right:
+				recoilVector = new Vector2(0f - RECOIL_VELOCITY, RECOIL_VELOCITY * 0.5f);
+				if (!cState.facingRight)
+				{
+					FlipSprite();
+				}
+				break;
+			default:
+				recoilVector = Vector2.zero;
+				break;
 		}
 		SetState(ActorStates.no_input);
 		cState.recoilFrozen = true;
@@ -1890,29 +1890,29 @@ public class HeroController : MonoBehaviour
 				BackOnGround();
 			}
 		}
-        else if (hero_state == ActorStates.no_input)
-        {
-            if (cState.recoiling)
-            {
-                if ((!playerData.GetBool("equippedCharm_4") && recoilTimer < RECOIL_DURATION) || (playerData.GetBool("equippedCharm_4") && recoilTimer < RECOIL_DURATION_STAL))
-                {
-                    recoilTimer += Time.deltaTime;
-                }
-                else
-                {
-                    CancelDamageRecoil();
-                    if ((prev_hero_state == ActorStates.idle || prev_hero_state == ActorStates.running) && !CheckTouchingGround())
-                    {
-                        cState.onGround = false;
-                        SetState(ActorStates.airborne);
-                    }
-                    else
-                    {
-                        SetState(ActorStates.previous);
-                    }
-                }
-            }
-        }
+		else if (hero_state == ActorStates.no_input)
+		{
+			if (cState.recoiling)
+			{
+				if ((!playerData.GetBool("equippedCharm_4") && recoilTimer < RECOIL_DURATION) || (playerData.GetBool("equippedCharm_4") && recoilTimer < RECOIL_DURATION_STAL))
+				{
+					recoilTimer += Time.deltaTime;
+				}
+				else
+				{
+					CancelDamageRecoil();
+					if ((prev_hero_state == ActorStates.idle || prev_hero_state == ActorStates.running) && !CheckTouchingGround())
+					{
+						cState.onGround = false;
+						SetState(ActorStates.airborne);
+					}
+					else
+					{
+						SetState(ActorStates.previous);
+					}
+				}
+			}
+		}
 		else if (hero_state != ActorStates.no_input)
 		{
 			LookForInput();

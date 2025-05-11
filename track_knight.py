@@ -1,36 +1,68 @@
+import copy
+import os
+import pickle
 import numpy as np
 from game_data import GameData
-from hksocket import run_websocket_server, event_queue, connected_event, stop_websocket_server, is_server_running
-from jumps import get_selected_jumps, log_knight_state, do_jump
-from process_segmentations import process_segmentations
+from hksocket import (
+    run_websocket_server,
+    event_queue,
+    connected_event,
+    stop_websocket_server,
+    is_server_running,
+)
+from physics.hero_controller_state import HeroControllerStates
+from physics.inverse_kinematics import get_apex_height_range, inverse_kinematics
+from physics.player_input import PlayerInput
 import pygame
+from argparse import ArgumentParser
 
 import control
-from visualize import draw_knight, draw_object_box, draw_path, draw_region, get_screen_info, clear_screen, draw_room_segmentations, highlight_floor, print_debug_text
+from visualize import (
+    draw_knight,
+    draw_object_box,
+    draw_terrain,
+    get_screen_info2,
+    print_debug_text,
+    draw_path2,
+)
+from physics.hero_controller import forward_dynamics, forward_dynamics_basic
+from motion import Jump, MotionPrimitive
 
-def main_loop(window_size):
+
+def main_loop(window_size, scene, connect=True):
     # Start listening for data
-    run_websocket_server()
-    print('Waiting for websocket to connect')
-    connected_event.wait()
-    if not is_server_running():
-        print('Server is not running')
-        return
+
+    if connect:
+        run_websocket_server()
+        print("Waiting for websocket to connect")
+        connected_event.wait()
+        if not is_server_running():
+            print("Server is not running")
+            return
 
     # Init pygame
     pygame.init()
+    clock = pygame.time.Clock()
 
     # Set up the display
     screen = pygame.display.set_mode(window_size)
     pygame.display.set_caption("HK Bot")
     screen_transform = None
 
-    selected_jumps = get_selected_jumps()
-    game = GameData()
-    floor_path = []
+    real_game = GameData(use_cache=False)
+    real_game.scene_name = scene
+    simulator = real_game
+    game = real_game
     clicked_pos = None
 
+    simulated_physics = False
+    framerate = 50
+
     control.start_control_process()
+
+    jump_motion = Jump.sample(1)
+    action_iterator = None
+    last_ground = None
 
     running = True
     while running:
@@ -43,7 +75,63 @@ def main_loop(window_size):
                     running = False
                     break
                 if event.key == pygame.K_r:
-                    game.reset_room(use_cache=False)
+                    real_game.reset_room(use_cache=False)
+                elif event.key == pygame.K_s:
+                    room_cache_path = os.path.join(
+                        "rooms", f"{real_game.scene_name}.pkl"
+                    )
+                    with open(room_cache_path, "wb") as file:
+                        if simulated_physics:
+                            pickle.dump(simulator, file, pickle.HIGHEST_PROTOCOL)
+                        else:
+                            pickle.dump(real_game, file, pickle.HIGHEST_PROTOCOL)
+                    print(f"Saved game state to {room_cache_path}")
+                elif event.key == pygame.K_l and real_game.scene_name:
+                    room_cache_path = os.path.join(
+                        "rooms", f"{real_game.scene_name}.pkl"
+                    )
+                    with open(room_cache_path, "rb") as file:
+                        if simulated_physics:
+                            simulator = pickle.load(file)
+                        else:
+                            real_game = pickle.load(file)
+                    print(f"Loaded game state {room_cache_path}")
+                elif event.key == pygame.K_p:
+                    simulated_physics = not simulated_physics
+                    if simulated_physics:
+                        print("Simulating physics now")
+                        simulator = copy.deepcopy(real_game)
+                        game = simulator
+                    else:
+                        print("Tracking game state")
+                        game = real_game
+                elif event.key == pygame.K_e:
+                    # execute the control action
+                    action_iterator = PlayerInput.get_action_iterator(
+                        jump_motion.control_sequence(), framerate
+                    )
+                elif event.key == pygame.K_d:
+                    # sample action
+                    # jump_motion = Jump(0.04, True, 0, 0, 0.5)
+                    # jump_motion = MotionPrimitive.sample()
+                    # from_state = game.knight_state
+                    # to_state = game.knight_state.copy()
+                    # to_state.x_pos += 5
+                    # success, motion = inverse_kinematics(
+                    #     from_state, to_state, game.terrain
+                    # )
+                    # if success:
+                    #     jump_motion = motion
+                    # else:
+                    #     print("Could not inverse_kinematics")
+                    invkin_target = HeroControllerStates(
+                        x_pos=game.knight_state.x_pos+3, y_pos=game.knight_state.y_pos+3, y_velocity=-5, onGround=False
+                    )
+                    success, inv_motion = inverse_kinematics(
+                        game.knight_state, invkin_target, game.terrain
+                    )
+                    if success:
+                        jump_motion = inv_motion
                 elif event.key == pygame.K_UP:
                     control.press_up()
                 elif event.key == pygame.K_DOWN:
@@ -56,13 +144,8 @@ def main_loop(window_size):
                     control.press_jump()
                 elif event.key == pygame.K_x:
                     control.press_attack()
-                elif event.key == pygame.K_j:
-                    # game.begin_jump(do_jump(game, 5.5, kx + 1, 4))
-                    from_floor = game.last_grounded_floor
-                    if from_floor is not None and from_floor in floor_path:
-                        idx = floor_path.index(from_floor)
-                        if idx + 1 < len(floor_path):
-                            game.begin_navigate_to_floor(from_floor, floor_path[idx+1])
+                elif event.key == pygame.K_c:
+                    control.press_dash()
 
             elif event.type == pygame.KEYUP:
                 if event.key == pygame.K_UP:
@@ -77,80 +160,155 @@ def main_loop(window_size):
                     control.release_jump()
                 elif event.key == pygame.K_x:
                     control.release_attack()
+                elif event.key == pygame.K_c:
+                    control.release_dash()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if screen_transform is not None:
                     sx, sy = pygame.mouse.get_pos()
-                    clicked_pos = screen_transform.inv_transform_xy(sx, window_size[1]-sy)
+                    clicked_pos = screen_transform.inv_transform_xy(
+                        sx, window_size[1] - sy
+                    )
                     clicked_pos = tuple([round(float(x), 2) for x in clicked_pos])
-                    if game.is_room_initialized:
-                        floor_path = game.room.pathfind_floors(game.knight_position, clicked_pos)
-        if not event_queue.empty():
-            data = event_queue.get()
-            game.new_snapshot(data)
 
-            if game.is_room_initialized:
-                kx, ky = game.knight['x'], game.knight['y']
-                # grounded = room.is_grounded(kx, ky)
-                # floor = room.get_over_floor(kx, ky)
-                region = game.room.locate_coarse(kx, ky)
-                # print('knight', kx, ky, grounded, [float(x) for x in floor[:3]], region)
-                # draw_region(screen_array, screen_transform, region)
-                log_knight_state(game.room, game.knight, None, game.time)
+                    invkin_target = HeroControllerStates(
+                        x_pos=clicked_pos[0], y_pos=clicked_pos[1], y_velocity=None
+                    )
+                    success, inv_motion = inverse_kinematics(
+                        game.knight_state, invkin_target, game.terrain
+                    )
+                    if success:
+                        jump_motion = inv_motion
+
+        if action_iterator is not None:
+            try:
+                next_action = next(action_iterator)
+                control.set_controls_pressed(next_action.get_keys_pressed())
+            except StopIteration:
+                action_iterator = None
+                control.set_controls_pressed([False] * 7)
+        control.tick_controls()
+
+        # Process real game data
+        first_data = True
+        while not event_queue.empty():
+            data = event_queue.get()
+            real_game.new_snapshot(data)
+            if not first_data:
+                print("frame dropped")
+            first_data = False
+        # Process simulation
+        if simulated_physics:
+            if simulator.is_room_initialized:
+                before_y = simulator.knight_state.y_pos
+                knight_state = forward_dynamics_basic(
+                    simulator.knight_state,
+                    simulator.terrain,
+                    PlayerInput.from_keys(control.controls_pressed),
+                    1 / framerate,
+                )
+                simulator.update_knight_state(knight_state)
+                # print('y change', before_y, simulator.knight_state.y_pos)
 
         if game.is_room_initialized:
-            screen_transform, screen_array = get_screen_info(game.room, window_size, min_y=-100)
-            print_debug_text(screen_array, f'Scene: {game.scene_name}', window_size[1]-50, 20)
-            
-            kx, ky = game.knight['x'], game.knight['y']
-            print_debug_text(screen_array, f'Knight: {kx}, {ky}', 10, 20)
-            print_debug_text(screen_array, f'Target: {clicked_pos}', 10, 40)
-            grounded = game.room.is_grounded(kx, ky)
-            floor = game.room.get_over_floor(kx, ky)
-            region = game.room.locate_coarse(kx, ky)
-            # print('knight', kx, ky, grounded, [float(x) for x in floor[:3]], region)
-            if region is None:
-                print('no region at ', kx, ky)
-            else:
-                draw_region(screen_array, screen_transform, region)
-                # if region.over_floor is not None:
-                #     highlight_floor(screen_array, screen_transform, region.over_floor)
-                #     for floor in region.over_floor.floor_neighbors:
-                #         highlight_floor(screen_array, screen_transform, floor, color=(128, 128, 0))
-                
-            is_next_floor = False
-            for neighbor_floor in floor_path:
-                color = (128, 128, 0)
-                if neighbor_floor == game.last_grounded_floor:
-                    color = (128, 128, 200)
-                    is_next_floor = True
-                elif is_next_floor:
-                    color = (200, 128, 128)
-                    is_next_floor = False
-                highlight_floor(screen_array, screen_transform, neighbor_floor, color=color)
-            # jump_path = np.array([[0.0, 0.0, 0.0], [0.0999999999994543, 0.8279999999999959, 1.3599999999999994], [0.1999999999998181, 1.6579999999999941, 2.9299999999999997], [0.29799999999977445, 2.479999999999997, 4.268999999999998], [0.39800000000013824, 3.308, 5.148], [0.49799999999959255, 4.142999999999994, 5.555]])
-            # jump_path = jump_path[:,1:]
-            # knight_offset = np.array([kx, ky])
-            # for jump in selected_jumps:
-            #     jump_path = jump + knight_offset
-            #     draw_path(screen_array, screen_transform, game.room, list(jump_path))
-            #     log_knight_state(game.room, game.knight, None, game.time)
-            # clear_screen(screen_array)
-            draw_room_segmentations(screen_array, game.room, screen_transform)
-            draw_knight(screen_array, screen_transform, game.knight)
+            screen_transform, screen_array = get_screen_info2(
+                game.terrain, window_size, min_y=-100
+            )
+            print_debug_text(
+                screen_array, f"Scene: {game.scene_name}", window_size[1] - 50, 20
+            )
+            print_debug_text(
+                screen_array,
+                f"<x={real_game.knight_state.x_pos:.2f}, y={real_game.knight_state.y_pos:.2f}, dy={real_game.knight_state.y_velocity:.2f}>",
+                20,
+                20,
+            )
+            if simulated_physics:
+                print_debug_text(
+                    screen_array,
+                    f"<x={simulator.knight_state.x_pos:.2f}, y={simulator.knight_state.y_pos:.2f}, dy={simulator.knight_state.y_velocity:.2f}>",
+                    20,
+                    40,
+                )
+
+            # temp_debug_str = f"{get_apex_height_range(game.knight_state)}, {max(map(lambda s: s.y_pos, game.jump_trajectory), default=0)}"
+            temp_debug_str = ','.join([f"{x.y_pos-y.y_pos:.1f}" for x, y in zip(game.jump_trajectory[1:], game.jump_trajectory[:-1])])
+            print_debug_text(screen_array, temp_debug_str, 20, window_size[1] - 20)
+
+            draw_terrain(screen_array, game.terrain, screen_transform)
+            draw_knight(
+                screen_array,
+                screen_transform,
+                game.knight_state.x_pos,
+                game.knight_state.y_pos,
+            )
+
+            # Find ground segment
+            # ground = [
+            #     x
+            #     for x in game.terrain.find_touching_segments(
+            #         np.array((game.knight_state.x_pos, game.knight_state.y_pos)), 0.05
+            #     )
+            #     if x.type == "floor"
+            # ]
+            # if len(ground) > 0:
+            #     last_ground = ground[0]
+            if game.last_grounded_floor:
+                draw_path2(
+                    screen_array,
+                    screen_transform,
+                    [
+                        (
+                            game.last_grounded_floor.x_min,
+                            game.last_grounded_floor.y_min,
+                        ),
+                        (
+                            game.last_grounded_floor.x_max,
+                            game.last_grounded_floor.y_max,
+                        ),
+                    ],
+                    (200, 200, 200),
+                )
+
+            # Project actions
+            projection_state = simulator.knight_state
+            projection_coords = [(projection_state.x_pos, projection_state.y_pos)]
+            for action in PlayerInput.get_action_iterator(
+                jump_motion.control_sequence(), framerate
+            ):
+                projection_state = forward_dynamics_basic(
+                    projection_state, simulator.terrain, action, 1 / framerate
+                )
+                projection_coords.append(
+                    (projection_state.x_pos, projection_state.y_pos)
+                )
+            draw_path2(
+                screen_array, screen_transform, projection_coords, (255, 255, 255)
+            )
 
             for transition in game.get_transitions():
                 draw_object_box(screen_array, screen_transform, transition, (0, 0, 200))
 
             # Update the screen
-            cimg = np.transpose(screen_array, (1, 0, 2)) # transpose to pygame dimensions
-            surf = pygame.surfarray.make_surface(cimg) # np array to pygame surface
-            screen.blit(surf, (0, 0)) # draw surface on screen
-            pygame.display.flip() # update display
+            cimg = np.transpose(
+                screen_array, (1, 0, 2)
+            )  # transpose to pygame dimensions
+            surf = pygame.surfarray.make_surface(cimg)  # np array to pygame surface
+            screen.blit(surf, (0, 0))  # draw surface on screen
+            pygame.display.flip()  # update display
 
-            game.do_movement()
+        clock.tick(framerate)
 
     stop_websocket_server()
     control.stop_control_process()
 
+
 if __name__ == "__main__":
-    main_loop(window_size=(640,480))
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--scene", "-s", default=None, type=str, help="The scene identifier"
+    )
+    parser.add_argument(
+        "--no-connect", "-n", action="store_true", help="Don't connect to server"
+    )
+    config = parser.parse_args()
+    main_loop(window_size=(640, 480), scene=config.scene, connect=not config.no_connect)

@@ -47,8 +47,9 @@ def process_terrain(game_data, use_cache=True) -> Terrain:
         new_arr[:, 1] *= factor
         return new_arr
 
-    knight_width = 0.25
-    knight_height = 0.641
+    penetration_slop = 0.015
+    knight_width = 0.25 + penetration_slop
+    knight_height = 0.641 + penetration_slop
 
     squashed = [scale_vertical(arr, knight_width / knight_height) for arr in np_terrain]
     offset = pyclipr.ClipperOffset()

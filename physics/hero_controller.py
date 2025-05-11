@@ -5,6 +5,7 @@ from physics.player_input import PlayerInput
 import numpy as np
 
 FIXED_UPDATE_FRAMERATE = 50
+FIXED_DELTA_TIME = 1 / FIXED_UPDATE_FRAMERATE
 ATTACK_COOLDOWN_TIME = 0.41
 ATTACK_DURATION = 0.35
 BIG_FALL_TIME = 1.1
@@ -16,7 +17,7 @@ DOUBLE_JUMP_STEPS = 9
 DOUBLE_JUMP_TIME = DOUBLE_JUMP_STEPS / FIXED_UPDATE_FRAMERATE
 DOUBLE_JUMP_DELAY_STEPS = 3
 DOUBLE_JUMP_DELAY = DOUBLE_JUMP_DELAY_STEPS / FIXED_UPDATE_FRAMERATE
-GRAVITY = 0.79
+GRAVITY = 0.79 * 60  # gravityScale is 0.79 and Physics2D.gravity.y is -60
 JUMP_SPEED = 16.65
 JUMP_STEPS = 9
 JUMP_TIME = JUMP_STEPS / FIXED_UPDATE_FRAMERATE
@@ -24,7 +25,7 @@ JUMP_STEPS_MIN = 4
 JUMP_TIME_MIN = JUMP_STEPS_MIN / FIXED_UPDATE_FRAMERATE
 MAX_FALL_VELOCITY = 20
 RECOIL_HOR_VELOCITY = 3.75
-RUN_SPEED = 8.35
+RUN_SPEED = 8.3
 WALLSLIDE_DECEL = 0
 WALLSLIDE_SPEED = -8
 WJ_KICKOFF_SPEED = 16
@@ -33,7 +34,7 @@ WJLOCK_TIME = WJLOCK_STEPS_LONG / FIXED_UPDATE_FRAMERATE
 WJ_DECEL = (WJ_KICKOFF_SPEED - RUN_SPEED) / WJLOCK_TIME
 
 
-def forward_dyanmics(
+def forward_dynamics(
     old_state: HeroControllerStates,
     environment: Terrain,
     controls: PlayerInput,
@@ -161,9 +162,9 @@ def forward_dyanmics(
         #    cancel wallLocked if holding away direction
         #    check if jump released --- cancel positive velocity and jump (assume jumpReleaseQueueingEnabled==false)
         if not controls.jump:
-            if new_state.jump_time > 0:
-                print('release', new_state.jump_time, new_state.y_velocity, JUMP_TIME)
-            if new_state.y_velocity > 0 and new_state.jump_time < (JUMP_TIME - JUMP_TIME_MIN):
+            if new_state.y_velocity > 0 and new_state.jump_time < (
+                JUMP_TIME - JUMP_TIME_MIN
+            ):
                 new_state.y_velocity = 0
                 new_state.jump_time = 0
 
@@ -239,9 +240,11 @@ def forward_dyanmics(
     #     new_state.y_velocity * duration - 0.5 * gravity * duration * duration
     # )
 
-    new_state.y_velocity -= gravity
+    new_state.y_velocity -= gravity * duration
     hit, new_pos, new_vel, hit_info = environment.integrate_motion(
-        np.array([old_state.x_pos, old_state.y_pos]), np.array([new_state.x_velocity, new_state.y_velocity]), duration
+        np.array([old_state.x_pos, old_state.y_pos]),
+        np.array([new_state.x_velocity, new_state.y_velocity]),
+        duration,
     )
     new_state.x_pos = new_pos[0]
     new_state.y_pos = new_pos[1]
@@ -253,7 +256,7 @@ def forward_dyanmics(
     touching_types = [seg.type for seg in touching]
     new_state.onGround = "floor" in touching_types
     # new_state.wall
-    
+
     #   if top collision:
     #       cancel jump/bounce/etc, kill vertical velocity
     #   if bottom collision:
@@ -264,6 +267,80 @@ def forward_dyanmics(
     #       set ungrounded, start coyote time
     #   if slidable wall collision:
     #       if not dashing, not grounded, has wall jump, start sliding
+
+    return new_state
+
+
+def forward_dynamics_basic(
+    old_state: HeroControllerStates,
+    environment: Terrain,
+    controls: PlayerInput,
+    duration: float,
+):
+    new_state: HeroControllerStates = copy.copy(old_state)
+    gravity = GRAVITY
+    # -------------------------
+    # FixedUpdate:
+    # check recoil cancel
+    # new_state.onGround = False
+    # check crash landing
+
+    if not new_state.dashing:
+        if not new_state.wallSliding:
+            new_state.x_velocity = RUN_SPEED * controls.move_direction
+
+    # Jump
+    if new_state.jump_time > 0:
+        new_state.jump_time -= duration
+        new_state.y_velocity = JUMP_SPEED
+
+    # cap fall velocity
+    if new_state.y_velocity < -MAX_FALL_VELOCITY:
+        new_state.y_velocity = -MAX_FALL_VELOCITY
+
+    # ------------------------
+    # Update:
+
+    # hard landing pause
+    if True:
+        # Input:
+        #    check if jump released --- cancel positive velocity and jump (assume jumpReleaseQueueingEnabled==false)
+        if not controls.jump:
+            if new_state.y_velocity > 0 and new_state.jump_time < (
+                JUMP_TIME - JUMP_TIME_MIN
+            ):
+                new_state.y_velocity = 0
+                new_state.jump_time = 0
+
+        # QueueInput:
+        #    if jump pressed:
+        if controls.jump:
+            if new_state.onGround:
+                if new_state.jump_time <= 0:
+                    new_state.jump_time = JUMP_TIME
+                    new_state.onGround = False
+        # else:
+        #     new_state.jump_time = 0
+
+    # cancel wall slide if grounded or not touching wall
+    if new_state.onGround:
+        new_state.wallSliding = False
+
+    new_state.y_velocity -= gravity * duration
+    hit, new_pos, new_vel, hit_info = environment.integrate_motion(
+        np.array([old_state.x_pos, old_state.y_pos]),
+        np.array([new_state.x_velocity, new_state.y_velocity]),
+        duration,
+    )
+    new_state.x_pos = new_pos[0]
+    new_state.y_pos = new_pos[1]
+    new_state.x_velocity = new_vel[0]
+    new_state.y_velocity = new_vel[1]
+
+    # handle collisions:
+    touching = environment.find_touching_segments(new_pos)
+    touching_types = [seg.type for seg in touching]
+    new_state.onGround = "floor" in touching_types
 
     return new_state
 
