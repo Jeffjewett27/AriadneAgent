@@ -4,83 +4,128 @@ from shapely import GeometryCollection, MultiLineString, MultiPoint
 from shapely.geometry import LineString, box, Point, Polygon
 from shapely.geometry.polygon import orient
 from shapely.strtree import STRtree
+from shapely.ops import unary_union
+from shapely.ops import nearest_points
+from shapely.prepared import prep
 
 
 @dataclass
 class Segment:
-    x_min: float
-    y_min: float
-    x_max: float
-    y_max: float
+    x0: float
+    y0: float
+    x1: float
+    y1: float
     normal: np.ndarray
     line_string: LineString
     type: str
     polygon: Polygon
 
     def __hash__(self):
-        return hash((self.x_min, self.x_max, self.y_min, self.y_max, self.type))
+        return hash((self.x0, self.x1, self.y0, self.y1, self.type))
+    
+    @property
+    def x_min(self):
+        return min(self.x0, self.x1)
+    
+    @property
+    def x_max(self):
+        return max(self.x0, self.x1)
+    
+    @property
+    def y_min(self):
+        return min(self.y0, self.y1)
+    
+    @property
+    def y_max(self):
+        return max(self.y0, self.y1)
 
 
 class Terrain:
-    def __init__(self, polygons: list[tuple[np.ndarray, bool]], epsilon: float = 1e-6):
-        self.polygons = []
+    def __init__(self, polygons: list[Polygon], scene_width: float, scene_height: float, epsilon: float = 1e-6):
+        self.polygons = polygons
         self.segments: list[Segment] = []
+        self.scene_width = scene_width
+        self.scene_height = scene_height
 
-        for p_idx, (coords, isHole) in enumerate(polygons):
-            # Ensure closure: last point == first point
-            if not np.allclose(coords[0], coords[-1], atol=epsilon):
-                coords = np.vstack([coords, coords[0]])
+        for p_idx, polygon in enumerate(polygons):
+            # build a list of (coords_array, isHole) for exterior+interiors
+            ring_list = []
+            # exterior ring
+            ring_list.append((np.array(polygon.exterior.coords), False))
+            # each interior ring
+            for interior in polygon.interiors:
+                ring_list.append((np.array(interior.coords), True))
 
-            poly = Polygon(coords)
-            self.polygons.append(poly)
-            poly_coords = np.array(poly.exterior.coords)
+            for coords, isHole in ring_list:
+                # ensure closure
+                if not np.allclose(coords[0], coords[-1], atol=epsilon):
+                    coords = np.vstack([coords, coords[0]])
+                    
+                for i in range(len(coords) - 1):
+                    x1, y1 = coords[i]
+                    x2, y2 = coords[i + 1]
 
-            # Number of segments = number of points - 1 (closed loop)
-            for i in range(len(poly_coords) - 1):
-                x1, y1 = poly_coords[i]
-                x2, y2 = poly_coords[i + 1]
+                    dx = x2 - x1
+                    dy = y2 - y1
 
-                dx = x2 - x1
-                dy = y2 - y1
+                    if isHole:
+                        # Inward normal (CCW rotation)
+                        nx, ny = -dy, dx
+                    else:
+                        # Outward normal (CW rotation)
+                        nx, ny = dy, -dx
 
-                if isHole:
-                    # Inward normal (CCW rotation)
-                    nx, ny = -dy, dx
-                else:
-                    # Outward normal (CW rotation)
-                    nx, ny = dy, -dx
+                    # Normalize
+                    length = np.linalg.norm([nx, ny])
+                    if length > epsilon:
+                        nx /= length
+                        ny /= length
 
-                # Normalize
-                length = np.linalg.norm([nx, ny])
-                if length > epsilon:
-                    nx /= length
-                    ny /= length
+                    # Classify segment by normal direction
+                    if ny < -epsilon:
+                        seg_type = "ceiling"
+                    elif abs(nx) < epsilon and ny > epsilon:
+                        seg_type = "floor"
+                    elif nx > epsilon:
+                        seg_type = "left_wall"
+                    else:
+                        seg_type = "right_wall"
 
-                # Classify segment by normal direction
-                if ny < -epsilon:
-                    seg_type = "ceiling"
-                elif abs(nx) < epsilon and ny > epsilon:
-                    seg_type = "floor"
-                elif nx > epsilon:
-                    seg_type = "left_wall"
-                else:
-                    seg_type = "right_wall"
+                    segment_info = Segment(
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        np.array([nx, ny]),
+                        LineString(((x1, y1), (x2, y2))),
+                        seg_type,
+                        polygon,
+                    )
 
-                segment_info = Segment(
-                    x1,
-                    y1,
-                    x2,
-                    y2,
-                    np.array([nx, ny]),
-                    LineString(((x1, y1), (x2, y2))),
-                    seg_type,
-                    poly,
-                )
-
-                self.segments.append(segment_info)
+                    self.segments.append(segment_info)
 
         line_strings = [seg.line_string for seg in self.segments]
         self.str_tree = STRtree(line_strings)
+        self.raw_collision = unary_union(self.polygons)
+        # Initialize the prepared geometry
+        self._init_prepared_geometry()
+
+    def _init_prepared_geometry(self):
+        """Initialize the prepared geometry for collision detection"""
+        self.poly_collision = prep(self.raw_collision)
+
+    def __getstate__(self):
+        """Remove unpicklable prepared geometry before pickling"""
+        state = self.__dict__.copy()
+        # Remove the prepared geometry
+        state.pop('poly_collision', None)
+        return state
+
+    def __setstate__(self, state):
+        """Restore the prepared geometry after unpickling"""
+        self.__dict__.update(state)
+        # Regenerate the prepared geometry
+        self._init_prepared_geometry()
 
     def raycast(
         self,
@@ -179,6 +224,7 @@ class Terrain:
         if dt <= epsilon or speed <= epsilon:
             return False, pos, vel, []
 
+        pos = self.resolve_initial_penetration(pos)
         pos_next = pos + vel * dt
 
         # Broad phase AABB collision
@@ -251,6 +297,19 @@ class Terrain:
             return True, hit_point, vel, hit_segments
 
         return False, pos_next, vel, []
+    
+    def resolve_initial_penetration(self, pos: np.ndarray):
+        """
+        If pos is inside the terrain, 
+        project it onto the nearest point on the boundary.
+        """
+        pt = Point(pos)
+        if self.poly_collision.contains(pt):
+            # Find the nearest point on the boundary of the geometry
+            # This works for both Polygon and MultiPolygon
+            pt_on_boundary = nearest_points(self.raw_collision.boundary, pt)[0]
+            return np.array([pt_on_boundary.x, pt_on_boundary.y])
+        return pos
 
     def find_touching_segments(
         self, pos: np.ndarray, epsilon: float = 1e-6

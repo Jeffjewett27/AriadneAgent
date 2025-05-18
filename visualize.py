@@ -134,9 +134,8 @@ def draw_room_segmentations(img, room, transform):
 
 def draw_terrain(img, terrain: Terrain, transform):
     for segment in terrain.segments:
-        p0 = transform.transform_xy(segment.x_min, segment.y_min)
-        p1 = transform.transform_xy(segment.x_max, segment.y_max)
-
+        p0 = transform.transform_xy(segment.x0, segment.y0)
+        p1 = transform.transform_xy(segment.x1, segment.y1)
         match segment.type:
             case "floor":
                 color = (0, 255, 255)

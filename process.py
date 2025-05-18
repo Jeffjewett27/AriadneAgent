@@ -5,6 +5,7 @@ from itertools import cycle
 import pickle
 
 import pyclipr.pyclipr
+from shapely.geometry import Polygon
 
 from physics.environment import Terrain
 
@@ -54,7 +55,7 @@ def process_terrain(game_data, use_cache=True) -> Terrain:
     squashed = [scale_vertical(arr, knight_width / knight_height) for arr in np_terrain]
     offset = pyclipr.ClipperOffset()
     offset.scaleFactor = int(1000)
-    offset.addPaths(squashed, pyclipr.JoinType.Square, pyclipr.EndType.Polygon)
+    offset.addPaths(squashed, pyclipr.JoinType.Miter, pyclipr.EndType.Polygon)
     dilated = offset.execute(knight_width)
     # filter dilation artifacts. I don't know what the deal is with these, but it creates small boxes at seemingly arbitrary positions
     # no_artifacts = [arr for arr in dilated if (arr.max(axis=0) - arr.min(axis=0)).max() > knight_width]
@@ -82,21 +83,47 @@ def process_terrain(game_data, use_cache=True) -> Terrain:
     clip_tree = pc.execute2(pyclipr.Intersection, pyclipr.FillRule.NonZero)
 
     # Extract the polygons and whether they are holes
-    def recurse_clip_tree(clip_tree, out_list):
-        for child in clip_tree.children:
-            n = len(child.polygon)
-            if n == 0:
-                continue
-            poly = np.array(child.polygon)
-            out_list.append((poly, child.isHole))
-            recurse_clip_tree(child, out_list)
+    # def recurse_clip_tree(clip_tree, out_list):
+    #     for child in clip_tree.children:
+    #         n = len(child.polygon)
+    #         if n == 0:
+    #             continue
+    #         poly = np.array(child.polygon)
+    #         out_list.append((poly, child.isHole))
+    #         recurse_clip_tree(child, out_list)
 
-    polygons = []
-    recurse_clip_tree(clip_tree, polygons)
+    # polygons = []
+    # recurse_clip_tree(clip_tree, polygons)
 
-    terrain = Terrain(polygons)
+    polygons: list[Polygon] = []
+    for root in clip_tree.children:
+        if hasattr(root.polygon, '__len__') and len(root.polygon) > 0:
+            clip_tree_to_polygons(root, polygons)
+    terrain = Terrain(polygons, game_data.scene_width, game_data.scene_height)
 
-    with open(room_cache_path, 'wb') as file:
-        pickle.dump(terrain, file, pickle.HIGHEST_PROTOCOL)
+    # with open(room_cache_path, 'wb') as file:
+    #     pickle.dump(terrain, file, pickle.HIGHEST_PROTOCOL)
 
     return terrain
+
+def clip_tree_to_polygons(node, out_polys):
+    """
+    Walk *every* node in the pyclipr tree.  
+    Whenever you hit a non‑hole node *with* a polygon, build a shell+holes
+    from its immediate children that are marked as holes.
+    Then recurse into *all* children to catch islands inside holes, etc.
+    """
+    # only build a Polygon for non‑holes that actually have coords
+    if not node.isHole and len(node.polygon) > 0:
+        shell = close_poly(node.polygon)
+        holes = [close_poly(child.polygon) for child in node.children if child.isHole]
+        out_polys.append( Polygon(shell, holes) )
+
+    # recurse into every child, regardless of isHole
+    for child in node.children:
+        clip_tree_to_polygons(child, out_polys)
+
+def close_poly(coords: np.ndarray, epsilon=0.01):
+    if not np.allclose(coords[0], coords[-1], atol=epsilon):
+        coords = np.vstack([coords, coords[0]])
+    return coords

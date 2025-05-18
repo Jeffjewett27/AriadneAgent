@@ -1,7 +1,7 @@
 import numpy as np
 from physics.hero_controller_state import HeroControllerStates
 from process import process_terrain
-
+from planning import RRTGraph, sample_connections
 
 class GameData:
     def __init__(self, use_cache=True):
@@ -15,6 +15,12 @@ class GameData:
         if self.scene_name != new_scene_name:
             self.clear_scene()
             self.scene_name = new_scene_name
+
+        if "sceneWidth" in snapshot:
+            self.scene_width = snapshot["sceneWidth"]
+        if "sceneHeight" in snapshot:
+            self.scene_height = snapshot["sceneHeight"]
+
         terrain_segmentation = snapshot.get("terrainSegmentation", None)
         hazard_segmentation = snapshot.get("staticHazardSegmentation", None)
         get_new_room = False
@@ -86,6 +92,7 @@ class GameData:
         self.terrain_segmentation = None
         self.hazard_segmentation = None
         self.terrain = None
+        self.planner = None
         self.time = None
 
         self.last_grounded_floor = None
@@ -102,6 +109,9 @@ class GameData:
     def reset_room(self, use_cache=True):
         self.terrain = process_terrain(self, use_cache=use_cache)
         print("terrain processed", self.terrain)
+        if self.terrain:
+            self.planner = sample_connections(self.terrain, num_samples=4000)
+            print("planner sampled", self.planner)
 
     @property
     def is_room_initialized(self):

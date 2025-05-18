@@ -13,6 +13,7 @@ from hksocket import (
 from physics.hero_controller_state import HeroControllerStates
 from physics.inverse_kinematics import get_apex_height_range, inverse_kinematics
 from physics.player_input import PlayerInput
+from planning import sample_connections, visualize_floor_connections, visualize_graph
 import pygame
 from argparse import ArgumentParser
 
@@ -60,9 +61,13 @@ def main_loop(window_size, scene, connect=True):
 
     control.start_control_process()
 
-    jump_motion = Jump.sample(1)
+    # jump_motion = Jump.sample(1)
+    jump_motion = Jump(jump_time=0.5, is_right=False, x_wait=0.5, x_hold_time=0, x_pause=0)
     action_iterator = None
     last_ground = None
+    trajectory = []
+    target_segments = []
+    target_position = None
 
     running = True
     while running:
@@ -124,14 +129,16 @@ def main_loop(window_size, scene, connect=True):
                     #     jump_motion = motion
                     # else:
                     #     print("Could not inverse_kinematics")
-                    invkin_target = HeroControllerStates(
-                        x_pos=game.knight_state.x_pos+3, y_pos=game.knight_state.y_pos+3, y_velocity=-5, onGround=False
-                    )
-                    success, inv_motion = inverse_kinematics(
-                        game.knight_state, invkin_target, game.terrain
-                    )
-                    if success:
-                        jump_motion = inv_motion
+                    # invkin_target = HeroControllerStates(
+                    #     x_pos=game.knight_state.x_pos+3, y_pos=game.knight_state.y_pos+3, y_velocity=-5, onGround=False
+                    # )
+                    # success, inv_motion = inverse_kinematics(
+                    #     game.knight_state, invkin_target, game.terrain
+                    # )
+                    # if success:
+                    #     jump_motion = inv_motion
+                    # visualize_floor_connections(rrt_graph, game.terrain)
+                    visualize_graph(game.planner, game.terrain)
                 elif event.key == pygame.K_UP:
                     control.press_up()
                 elif event.key == pygame.K_DOWN:
@@ -170,14 +177,16 @@ def main_loop(window_size, scene, connect=True):
                     )
                     clicked_pos = tuple([round(float(x), 2) for x in clicked_pos])
 
-                    invkin_target = HeroControllerStates(
-                        x_pos=clicked_pos[0], y_pos=clicked_pos[1], y_velocity=None
-                    )
-                    success, inv_motion = inverse_kinematics(
-                        game.knight_state, invkin_target, game.terrain
-                    )
-                    if success:
-                        jump_motion = inv_motion
+                    # invkin_target = HeroControllerStates(
+                    #     x_pos=clicked_pos[0], y_pos=clicked_pos[1], y_velocity=None
+                    # )
+                    # success, inv_motion = inverse_kinematics(
+                    #     game.knight_state, invkin_target, game.terrain
+                    # )
+                    # if success:
+                    #     jump_motion = inv_motion
+                    target_position = clicked_pos
+                    trajectory, target_segments = game.planner.find_path(game.knight_state, clicked_pos)
 
         if action_iterator is not None:
             try:
@@ -252,35 +261,47 @@ def main_loop(window_size, scene, connect=True):
             # ]
             # if len(ground) > 0:
             #     last_ground = ground[0]
-            if game.last_grounded_floor:
-                draw_path2(
-                    screen_array,
-                    screen_transform,
-                    [
-                        (
-                            game.last_grounded_floor.x_min,
-                            game.last_grounded_floor.y_min,
-                        ),
-                        (
-                            game.last_grounded_floor.x_max,
-                            game.last_grounded_floor.y_max,
-                        ),
-                    ],
-                    (200, 200, 200),
-                )
+            # if game.last_grounded_floor:
+            #     draw_path2(
+            #         screen_array,
+            #         screen_transform,
+            #         [
+            #             (
+            #                 game.last_grounded_floor.x_min,
+            #                 game.last_grounded_floor.y_min,
+            #             ),
+            #             (
+            #                 game.last_grounded_floor.x_max,
+            #                 game.last_grounded_floor.y_max,
+            #             ),
+            #         ],
+            #         (200, 200, 200),
+            #     )
+
+            draw_path2(screen_array, screen_transform, [(state.x_pos, state.y_pos) for state, _ in trajectory], (255, 255, 255))
+            if target_position is not None:
+                draw_object_box(screen_array, screen_transform, {"x": target_position[0], "y": target_position[1], "w": 1, "h": 1}, (255, 0, 0))
 
             # Project actions
+            # projection_state = simulator.knight_state
+            # projection_coords = [(projection_state.x_pos, projection_state.y_pos)]
+            # for action in PlayerInput.get_action_iterator(
+            #     jump_motion.control_sequence(), framerate
+            # ):
+            #     projection_state = forward_dynamics_basic(
+            #         projection_state, simulator.terrain, action, 1 / framerate
+            #     )
+            #     projection_coords.append(
+            #         (projection_state.x_pos, projection_state.y_pos)
+            #     )
+            # draw_path2(
+            #     screen_array, screen_transform, projection_coords, (255, 255, 255)
+            # )
             projection_state = simulator.knight_state
             projection_coords = [(projection_state.x_pos, projection_state.y_pos)]
-            for action in PlayerInput.get_action_iterator(
-                jump_motion.control_sequence(), framerate
-            ):
-                projection_state = forward_dynamics_basic(
-                    projection_state, simulator.terrain, action, 1 / framerate
-                )
-                projection_coords.append(
-                    (projection_state.x_pos, projection_state.y_pos)
-                )
+            hit, new_pos, new_vel, segs = simulator.terrain.integrate_motion(np.array((projection_state.x_pos, projection_state.y_pos)), np.array([0, 15]), 0.5)
+            projection_coords.append(tuple(new_pos))
+            # print(hit, new_pos, new_vel, segs)
             draw_path2(
                 screen_array, screen_transform, projection_coords, (255, 255, 255)
             )
