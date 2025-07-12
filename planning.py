@@ -27,14 +27,18 @@ class RRTNode:
 
 
 class RRTGraph:
-    def __init__(self, floor_segments: list[Segment]):
+    def __init__(self, segments: list[Segment] = None):
         self.graph = nx.DiGraph()
         self.next_id = 0
         self.nodes: Dict[int, RRTNode] = {}
         self.bounds_min = None
         self.bounds_max = None
         self.floor_connection_graph = None
-        self.floor_segments = {hash(seg): seg for seg in floor_segments}
+        self.floor_segments = {} if segments is None else {hash(seg): seg for seg in segments if seg.type == 'floor'}
+        # Private state for sampling
+        self._priv_graph = None
+        self._is_sampling = False
+        self._terrain = None
 
     def add_node(self, rrt_state, sim_state, parent_id=None, control=None, duration=None, segment=None):
         node_id = self.next_id
@@ -293,6 +297,9 @@ class RRTGraph:
         Returns:
             List of node IDs representing the path, or None if no path exists
         """
+        if len(self.nodes) == 0:
+            print('no nodes in graph')
+            return [], []
         # Find nearest nodes to start and goal
         if isinstance(start_state, HeroControllerStates):
             start_state = sim_state_to_rrt_state(start_state)
@@ -341,6 +348,234 @@ class RRTGraph:
                 curr_segment = node_u.segment
 
         return trajectory, target_segments
+
+    def sample_connections_sync(self, terrain: Terrain, num_samples: int = 1000, 
+                          samples_per_segment: int = 5, max_edge_duration: float = 0.8,
+                          prune_nodes: bool = True, connect_same_segment: bool = True,
+                          publish_interval: int = 500):
+        """
+        Synchronously build a connected graph of motion primitives across all floor segments.
+        
+        Args:
+            terrain: The terrain containing segments
+            num_samples: Total number of random samples to generate
+            samples_per_segment: Number of equally spaced root nodes per segment
+            max_edge_duration: Maximum duration for edge connections
+            prune_nodes: Whether to prune non-essential nodes
+            connect_same_segment: Whether to connect nodes on the same floor segment
+            publish_interval: How often to prune and update the public graph
+            
+        Returns:
+            RRTGraph: Self, with the final graph
+        """
+        if self._is_sampling:
+            raise RuntimeError("Already sampling connections")
+            
+        floor_segments = [seg for seg in terrain.segments if seg.type == 'floor']
+        if not floor_segments:
+            return self
+            
+        # Initialize private sampling state
+        self._is_sampling = True
+        self._terrain = terrain
+        self._priv_graph = RRTGraph(floor_segments)
+        
+        # Create root nodes along each floor segment
+        self._initialize_floor_nodes(terrain, samples_per_segment)
+        
+        # Sample nodes
+        print(f'Sampling RRT graph for terrain with {num_samples} samples.')
+        for i in range(num_samples):
+            if i % publish_interval == 0 and i > 0:
+                print(f'{i} samples done. Publishing intermediate results...')
+                self._publish_pruned_graph(prune_nodes, connect_same_segment)
+                
+            self._sample_one_node(terrain, i, num_samples, max_edge_duration)
+        
+        # Final update
+        if num_samples % publish_interval != 0:
+            self._publish_pruned_graph(prune_nodes, connect_same_segment)
+            
+        # Clean up
+        self._is_sampling = False
+        self._priv_graph = None
+        self._terrain = None
+        
+        return self
+        
+    async def sample_connections_async(self, terrain: Terrain, num_samples: int = 1000, 
+                                samples_per_segment: int = 5, max_edge_duration: float = 0.8,
+                                prune_nodes: bool = True, connect_same_segment: bool = True,
+                                publish_interval: int = 500):
+        """
+        Asynchronously build a connected graph of motion primitives across all floor segments.
+        
+        Args:
+            terrain: The terrain containing segments
+            num_samples: Total number of random samples to generate
+            samples_per_segment: Number of equally spaced root nodes per segment
+            max_edge_duration: Maximum duration for edge connections
+            prune_nodes: Whether to prune non-essential nodes
+            connect_same_segment: Whether to connect nodes on the same floor segment
+            publish_interval: How often to prune and update the public graph
+            
+        Returns:
+            RRTGraph: Self, with the final graph
+        """
+        if self._is_sampling:
+            raise RuntimeError("Already sampling connections")
+            
+        import asyncio
+        
+        floor_segments = [seg for seg in terrain.segments if seg.type == 'floor']
+        if not floor_segments:
+            return self
+            
+        # Initialize private sampling state
+        self._is_sampling = True
+        self._terrain = terrain
+        self._priv_graph = RRTGraph(floor_segments)
+        
+        # Create root nodes along each floor segment
+        self._initialize_floor_nodes(terrain, samples_per_segment)
+        
+        # Sample nodes
+        print(f'Sampling RRT graph for terrain with {num_samples} samples.')
+        for i in range(num_samples):
+            if i % publish_interval == 0 and i > 0:
+                print(f'{i} samples done. Publishing intermediate results...')
+                self._publish_pruned_graph(prune_nodes, connect_same_segment)
+                # Yield to event loop periodically
+                await asyncio.sleep(0)
+                
+            self._sample_one_node(terrain, i, num_samples, max_edge_duration)
+            
+            # Yield to event loop occasionally to prevent blocking
+            if i % 50 == 0:
+                await asyncio.sleep(0)
+        
+        # Final update
+            if num_samples % publish_interval != 0:
+                self._publish_pruned_graph(prune_nodes, connect_same_segment)
+            
+        # Clean up
+        self._is_sampling = False
+        self._priv_graph = None
+        self._terrain = None
+        
+        return self
+    
+    def _initialize_floor_nodes(self, terrain: Terrain, samples_per_segment: int):
+        """Initialize root nodes on each floor segment"""
+        for segment in self._priv_graph.floor_segments.values():
+            # Sample points along the segment
+            x_coords = np.linspace(segment.x_min, segment.x_max, samples_per_segment)
+            y_coords = np.ones_like(x_coords) * segment.y_min  # Assuming floor segments are flat
+            
+            for i in range(samples_per_segment):
+                root_state = np.array([x_coords[i], y_coords[i], 0.0])  # x, y, y_velocity
+                
+                # Skip if outside scene bounds
+                if not is_within_scene_bounds(root_state, terrain):
+                    continue
+                    
+                sim_state = HeroControllerStates(
+                    x_pos=root_state[0],
+                    y_pos=root_state[1],
+                    y_velocity=root_state[2],
+                    onGround=True
+                )
+                segment_hash = hash(segment)
+                self._priv_graph.add_node(root_state, sim_state, segment=segment_hash)
+    
+    def _sample_one_node(self, terrain: Terrain, i: int, num_samples: int, max_edge_duration: float):
+        """Sample a single node and add it to the private graph"""
+        def duration_schedule(i):
+            # Potentially decrease duration as we sample more nodes
+            max_duration = 1.0
+            min_duration = 0.2
+            return max_duration - (max_duration - min_duration) * (i / num_samples)
+            
+        # Sample random state within scene bounds
+        state_rand = np.array([
+            np.random.uniform(0, terrain.scene_width),
+            np.random.uniform(0, terrain.scene_height),
+            0.0  # reasonable y_velocity range
+        ])
+
+        if np.random.uniform() < 0.5:
+            state_rand[2] = np.random.beta(4, 1) * 20
+        else:
+            state_rand[2] = np.random.beta(1, 4) * -10 + 2
+        
+        # Find closest node in the graph
+        nearest_id = self._priv_graph.get_nearest_node(state_rand)
+        parent_node = self._priv_graph.nodes[nearest_id]
+        
+        # Sample control and simulate
+        duration = min(duration_schedule(i), max_edge_duration)
+        control = MotionPrimitive.sample(duration)
+        full_state = parent_node.sim_state
+        
+        # Forward simulation
+        for action in PlayerInput.get_action_iterator(
+            control.control_sequence(), FIXED_UPDATE_FRAMERATE
+        ):
+            full_state = forward_dynamics(
+                full_state, terrain, action, 1 / FIXED_UPDATE_FRAMERATE
+            )
+        
+        # Create new node
+        new_state = sim_state_to_rrt_state(full_state)
+        
+        # Skip if outside scene bounds
+        if not is_within_scene_bounds(new_state, terrain):
+            return
+        
+        if full_state.onGround:
+            floor_segment = hash(get_ground_segment(full_state, terrain))
+        else:
+            floor_segment = None
+            
+        # Add node to private graph
+        self._priv_graph.add_node(
+            rrt_state=new_state,
+            sim_state=full_state,
+            parent_id=nearest_id,
+            control=control,
+            duration=duration,
+            segment=floor_segment
+        )
+    
+    def _publish_pruned_graph(self, prune_nodes: bool, connect_same_segment: bool):
+        """Prune the private graph and publish it to the public interface"""
+        # Update reachability in the private graph
+        essential_node_ids = self._priv_graph.update_segment_reachability(self._terrain)
+        
+        # Copy of the graph for pruning and processing
+        working_graph = RRTGraph(list(self._priv_graph.floor_segments.values()))
+        working_graph.graph = self._priv_graph.graph.copy()
+        working_graph.nodes = {k: v for k, v in self._priv_graph.nodes.items()}
+        working_graph.next_id = self._priv_graph.next_id
+        working_graph.bounds_min = self._priv_graph.bounds_min.copy() if self._priv_graph.bounds_min is not None else None
+        working_graph.bounds_max = self._priv_graph.bounds_max.copy() if self._priv_graph.bounds_max is not None else None
+        
+        # Optionally prune non-essential nodes
+        if prune_nodes:
+            working_graph.prune_non_essential_nodes(essential_node_ids)
+            
+        # Optionally connect nodes on the same floor segment
+        if connect_same_segment:
+            working_graph.connect_same_segment_nodes(list(working_graph.floor_segments.values()), self._terrain)
+        
+        # Publish to the public interface
+        self.graph = working_graph.graph
+        self.nodes = working_graph.nodes
+        self.next_id = working_graph.next_id
+        self.bounds_min = working_graph.bounds_min
+        self.bounds_max = working_graph.bounds_max
+        self.floor_segments = working_graph.floor_segments
+        self.floor_connection_graph = compute_floor_connections(self, self._terrain)
 
 
 def get_ground_segment(sim_state, terrain):
@@ -438,119 +673,17 @@ def sample_connections(terrain: Terrain, num_samples: int = 1000, samples_per_se
     Returns:
         RRTGraph: A graph representing the motion connections
     """
-    # Add root nodes for each floor segment
-    floor_segments = [seg for seg in terrain.segments if seg.type == 'floor']
-
-    # No floor segments found
-    if not floor_segments:
-        return RRTGraph([])
-    # Initialize the graph
-    rrt_graph = RRTGraph(floor_segments)
-    
-    
-    # Create root nodes along each floor segment
-    for segment in floor_segments:
-        # Sample points along the segment
-        x_coords = np.linspace(segment.x_min, segment.x_max, samples_per_segment)
-        y_coords = np.ones_like(x_coords) * segment.y_min  # Assuming floor segments are flat
-        
-        for i in range(samples_per_segment):
-            root_state = np.array([x_coords[i], y_coords[i], 0.0])  # x, y, y_velocity
-            
-            # Skip if outside scene bounds
-            if not is_within_scene_bounds(root_state, terrain):
-                continue
-                
-            sim_state = HeroControllerStates(
-                x_pos=root_state[0],
-                y_pos=root_state[1],
-                y_velocity=root_state[2],
-                onGround=True
-            )
-            segment_hash = hash(segment)
-            rrt_graph.add_node(root_state, sim_state, segment=segment_hash)
-    
-    def duration_schedule(i):
-        # Potentially decrease duration as we sample more nodes
-        max_duration = 1.0
-        min_duration = 0.2
-        return max_duration - (max_duration - min_duration) * (i / num_samples)
-    
-    print(f'Sampling RRT graph for terrain with {num_samples} samples.')
-    # RRT Expansion
-    for i in range(num_samples):
-        if i % 1000 == 500 and i > 0:
-            print(f'{i} samples done.')
-
-        # Sample random state within scene bounds
-        state_rand = np.array([
-            np.random.uniform(0, terrain.scene_width),
-            np.random.uniform(0, terrain.scene_height),
-            0.0  # reasonable y_velocity range
-        ])
-
-        if np.random.uniform() < 0.9:
-            state_rand[2] = np.random.beta(4, 1) * 20
-        else:
-            state_rand[2] = np.random.beta(1, 4) * -10 + 2
-        
-        # Find closest node in the graph
-        nearest_id = rrt_graph.get_nearest_node(state_rand)
-        parent_node = rrt_graph.nodes[nearest_id]
-        
-        # Sample control and simulate
-        duration = duration_schedule(i)
-        control = MotionPrimitive.sample(duration)
-        full_state = parent_node.sim_state
-        
-        # Forward simulation
-        for action in PlayerInput.get_action_iterator(
-            control.control_sequence(), FIXED_UPDATE_FRAMERATE
-        ):
-            full_state = forward_dynamics(
-                full_state, terrain, action, 1 / FIXED_UPDATE_FRAMERATE
-            )
-        
-        # Create new node
-        new_state = sim_state_to_rrt_state(full_state)
-        
-        # Skip if outside scene bounds
-        if not is_within_scene_bounds(new_state, terrain):
-            continue
-        
-        if full_state.onGround:
-            floor_segment = hash(get_ground_segment(full_state, terrain))
-        else:
-            floor_segment = None
-        # Add node to graph
-        rrt_graph.add_node(
-            rrt_state=new_state,
-            sim_state=full_state,
-            parent_id=nearest_id,
-            control=control,
-            duration=duration,
-            segment=floor_segment
-        )
-        
-        # Optional: Check for potential connections to other nearby nodes
-        # This allows the creation of cycles in the graph
-        # We could add edges between the new node and other nearby nodes
-        # For example, find k-nearest neighbors and add edges if path is valid
-    
-    essential_node_ids = rrt_graph.update_segment_reachability(terrain)
-    
-    # Compute and store floor connectivity
-    # rrt_graph.floor_connection_graph = compute_floor_connections(rrt_graph, terrain)
-    
-    # Optionally prune non-essential nodes
-    if prune_nodes:
-        rrt_graph.prune_non_essential_nodes(essential_node_ids)
-        
-    # Optionally connect nodes on the same floor segment
-    if connect_same_segment:
-        rrt_graph.connect_same_segment_nodes(floor_segments, terrain)
-
-    return rrt_graph
+    # Create and sample the RRT graph
+    graph = RRTGraph()
+    graph.sample_connections_sync(
+        terrain=terrain,
+        num_samples=num_samples,
+        samples_per_segment=samples_per_segment,
+        max_edge_duration=max_edge_duration,
+        prune_nodes=prune_nodes,
+        connect_same_segment=connect_same_segment
+    )
+    return graph
 
 def sim_state_to_rrt_state(sim_state: HeroControllerStates) -> np.ndarray:
     return np.array([sim_state.x_pos, sim_state.y_pos, sim_state.y_velocity])

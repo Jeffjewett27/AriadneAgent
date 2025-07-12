@@ -208,6 +208,7 @@ class Terrain:
         vel: np.ndarray,
         dt: float,
         epsilon: float = 1e-6,
+        depth: int = 0,
     ):
         """
         Integrate a point mass starting at pos with velocity vel for duration dt.
@@ -282,19 +283,23 @@ class Terrain:
             t_frac = max(0, min(nearest_dist / (np.linalg.norm(vel) * dt), 1))
             t_left = dt * (1 - t_frac)
 
+            new_vel = vel
             for hit_info in hit_segments:
-                v_dot = np.dot(vel, hit_info.normal)
-                vel = vel - hit_info.normal * v_dot
+                v_dot = np.dot(new_vel, hit_info.normal)
+                new_vel = new_vel - hit_info.normal * v_dot
+            assert np.linalg.norm(new_vel) <= orig_vel_mag + 0.001
 
             if (
                 epsilon < t_left
-                and np.linalg.norm(vel) > epsilon
-                and (t_left < dt or np.linalg.norm(vel) < orig_vel_mag)
+                and np.linalg.norm(new_vel) > epsilon
+                and (t_left < dt or np.linalg.norm(new_vel) < orig_vel_mag)
+                and depth < 4
             ):
                 # progress needs to be made either on distance or velocity
-                return self.integrate_motion(hit_point, vel, t_left)
+                # assert depth < 10, "Depth limit reached"
+                return self.integrate_motion(hit_point, new_vel, t_left, depth=depth + 1)
 
-            return True, hit_point, vel, hit_segments
+            return True, hit_point, new_vel, hit_segments
 
         return False, pos_next, vel, []
     
