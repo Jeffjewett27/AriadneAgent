@@ -1,6 +1,8 @@
+from collections import deque
 import copy
 import os
 import pickle
+import time
 import numpy as np
 from game_data import GameData
 from hksocket import (
@@ -27,7 +29,7 @@ from visualize import (
     draw_path2,
 )
 from physics.hero_controller import forward_dynamics, forward_dynamics_basic
-from motion import Jump, MotionPrimitive
+from motion import CompositePrimitive, Jump, MotionPrimitive, TerminateOnGroundWrapper
 
 
 def main_loop(window_size, scene, connect=True):
@@ -64,12 +66,17 @@ def main_loop(window_size, scene, connect=True):
     # jump_motion = Jump.sample(1)
     jump_motion = Jump(jump_time=0.5, is_right=False, x_wait=0.5, x_hold_time=0, x_pause=0)
     action_iterator = None
+    execution_prim = None
+    execution_queue = deque()
+    execution_reset_prim = True
     last_ground = None
     trajectory = []
     target_segments = []
     target_position = None
 
     running = True
+    executing = False
+    last_plan_time = 0
     while running:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -105,16 +112,18 @@ def main_loop(window_size, scene, connect=True):
                     simulated_physics = not simulated_physics
                     if simulated_physics:
                         print("Simulating physics now")
-                        simulator = copy.deepcopy(real_game)
+                        simulator = copy.copy(real_game)
                         game = simulator
                     else:
                         print("Tracking game state")
                         game = real_game
                 elif event.key == pygame.K_e:
                     # execute the control action
-                    action_iterator = PlayerInput.get_action_iterator(
-                        jump_motion.control_sequence(), framerate
-                    )
+                    # action_iterator = PlayerInput.get_action_iterator(
+                    #     jump_motion.control_sequence(), framerate
+                    # )
+                    executing = not executing
+                    print(f'Trajectory exectution toggled {"on" if executing else "off"}')
                 elif event.key == pygame.K_d:
                     # sample action
                     # jump_motion = Jump(0.04, True, 0, 0, 0.5)
@@ -138,7 +147,16 @@ def main_loop(window_size, scene, connect=True):
                     # if success:
                     #     jump_motion = inv_motion
                     # visualize_floor_connections(rrt_graph, game.terrain)
-                    visualize_graph(game.planner, game.terrain)
+                    # visualize_graph(game.planner, game.terrain)
+                    # new_prim = MotionPrimitive.sample(2)
+                    # execution_reset_prim = True
+                    # print('Executing prim', new_prim)
+                    # new_prim = TerminateOnGroundWrapper(new_prim)
+                    # execution_queue.append(new_prim)
+                    print('Executing:')
+                    print(execution_prim)
+                    print('Queue:')
+                    print('\n'.join([str(p) for p in execution_queue]))
                 elif event.key == pygame.K_UP:
                     control.press_up()
                 elif event.key == pygame.K_DOWN:
@@ -187,14 +205,41 @@ def main_loop(window_size, scene, connect=True):
                     #     jump_motion = inv_motion
                     target_position = clicked_pos
                     trajectory, target_segments = game.planner.find_path(game.knight_state, clicked_pos)
+            
 
-        if action_iterator is not None:
-            try:
-                next_action = next(action_iterator)
-                control.set_controls_pressed(next_action.get_keys_pressed())
-            except StopIteration:
-                action_iterator = None
-                control.set_controls_pressed([False] * 7)
+        cur_time = time.time()
+        if cur_time - last_plan_time > 1.2 and game.knight_state.onGround and (execution_prim is None or execution_prim.is_terminated):
+            last_plan_time = cur_time
+            if clicked_pos is not None:
+                trajectory, target_segments = game.planner.find_path(game.knight_state, clicked_pos)
+                
+            if trajectory is not None:
+                execution_queue.clear()
+                prims = [c for _, c in trajectory if c is not None]
+                prims = CompositePrimitive.merge_primitives(prims)
+                for new_prim in prims:
+                    execution_queue.append(new_prim)
+        # if action_iterator is not None:
+        #     try:
+        #         next_action = next(action_iterator)
+        #         control.set_controls_pressed(next_action.get_keys_pressed())
+        #     except StopIteration:
+        #         action_iterator = None
+        #         control.set_controls_pressed([False] * 7)
+        if executing:
+            if execution_prim is None and len(execution_queue) > 0:
+                execution_prim = execution_queue.pop()
+                execution_prim.reset_state(game.knight_state)
+                print('Executing primitive', execution_prim)
+            if execution_prim is not None:
+                if execution_prim.is_terminated:
+                    execution_prim = None
+                    control.set_controls_pressed([False] * 7)
+                else:
+                    next_action, terminated = execution_prim.get_action(game.knight_state)
+                    control.set_controls_pressed(next_action.get_keys_pressed())
+        else:
+            execution_prim = None
         control.tick_controls()
 
         # Process real game data

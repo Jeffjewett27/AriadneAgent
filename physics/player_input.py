@@ -1,8 +1,11 @@
 from dataclasses import dataclass
+from typing import ClassVar
 
 
 @dataclass
 class PlayerInput:
+    FRAMERATE: ClassVar[float] = 50
+
     vertical: float = 0
     horizontal: float = 0
     jump: bool = False

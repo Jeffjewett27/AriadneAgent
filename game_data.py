@@ -5,6 +5,7 @@ from physics.hero_controller_state import HeroControllerStates
 from process import process_terrain
 from planning import RRTGraph, sample_connections
 
+
 class GameData:
     def __init__(self, use_cache=True):
         self.use_cache = use_cache
@@ -17,16 +18,20 @@ class GameData:
         """Run the sampling event loop in a separate thread"""
         self._sampling_event_loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._sampling_event_loop)
-        
+
         async def sample_and_cleanup():
             try:
-                await self.planner.sample_connections_async(terrain, num_samples=num_samples)
+                await self.planner.sample_connections_async(
+                    terrain, num_samples=num_samples
+                )
             # except Exception as e:
             #     print(f"Error during sampling: {e}")
             finally:
                 self._sampling_event_loop.stop()
-        
-        self._sampling_task = self._sampling_event_loop.create_task(sample_and_cleanup())
+
+        self._sampling_task = self._sampling_event_loop.create_task(
+            sample_and_cleanup()
+        )
         self._sampling_event_loop.run_forever()
         self._sampling_event_loop.close()
 
@@ -34,11 +39,13 @@ class GameData:
         """Clean up any ongoing sampling task and thread"""
         if self._sampling_event_loop and self._sampling_task:
             if not self._sampling_task.done():
-                self._sampling_event_loop.call_soon_threadsafe(self._sampling_task.cancel)
-            
+                self._sampling_event_loop.call_soon_threadsafe(
+                    self._sampling_task.cancel
+                )
+
         if self._sampling_thread and self._sampling_thread.is_alive():
             self._sampling_thread.join(timeout=0.5)  # Give it a chance to cleanup
-            
+
         self._sampling_thread = None
         self._sampling_event_loop = None
         self._sampling_task = None
@@ -150,9 +157,7 @@ class GameData:
             self.planner = RRTGraph(self.terrain.segments)
             # Start sampling in a background thread
             self._sampling_thread = threading.Thread(
-                target=self._run_sampling_loop,
-                args=(self.terrain, 16000),
-                daemon=True
+                target=self._run_sampling_loop, args=(self.terrain, 16000), daemon=True
             )
             self._sampling_thread.start()
             print("Started sampling in background")

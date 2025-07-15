@@ -4,6 +4,7 @@ import numpy as np
 
 from constants import FULL_JUMP_FALLING_COEFFICIENTS, MAX_JUMP_HEIGHT, MAX_JUMP_INCREASING_DISTANCE
 from jumps import get_selected_jumps
+from physics.environment import Segment
 from room import Room
 
 straight_up_jumps = [
@@ -25,21 +26,19 @@ def flip_jump(jump):
     jump[:,0] = -jump[:,0]
     return jump
 
-class Floor:
+class SegmentPlanning:
 
-    def __init__(self, x_min, y_level, x_max):
+    def __init__(self, segment: Segment):
 
-        self.x_min = x_min
-        self.y_level = y_level
-        self.x_max = x_max
+        self.segment = segment
 
-        self.floor_neighbors: list[Floor] = []
+        self.floor_neighbors: list[SegmentPlanning] = []
 
-    def is_other_floor_potentially_in_range(self, other: Floor):
-        if other.y_level > self.y_level + MAX_JUMP_HEIGHT:
+    def is_other_floor_potentially_in_range(self, other: Segment):
+        if other.y_min > self.segment.y_max + MAX_JUMP_HEIGHT:
             # too high
             return False
-        if other.x_min > self.x_max:
+        if other.x_min > self.segment.x_max:
             # other is to the right
             # true if can reach during a jump ascend
             delta_x = other.x_min - self.x_max
@@ -70,7 +69,7 @@ class Floor:
             return True 
         return False
     
-    def is_other_floor_in_range(self, other: Floor, room: Room):
+    def is_other_floor_in_range(self, other: SegmentPlanning, room: Room):
         if other.y_level > self.y_level + MAX_JUMP_HEIGHT:
             # too high
             return False
@@ -125,7 +124,7 @@ class Floor:
             return True 
         return False
 
-    def check_other_floor(self, other: Floor, room: Room):
+    def check_other_floor(self, other: SegmentPlanning, room: Room):
         if other.y_level > self.y_level + MAX_JUMP_HEIGHT:
             # too high
             return False
@@ -163,7 +162,7 @@ class Floor:
         #     return False 
         return False
     
-    def check_jump_over_floor(self, from_location, jump, floor: Floor, room: Room):
+    def check_jump_over_floor(self, from_location, jump, floor: SegmentPlanning, room: Room):
         jump_path = jump + np.array(from_location)
         raygen = room.region_pathcast_generator(jump_path)
         for status, x, y, region in raygen:

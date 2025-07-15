@@ -1,8 +1,10 @@
 import multiprocessing
 import time
 from pywinauto.application import Application
+import warnings
 from time import sleep
 from typing import List, Tuple
+warnings.filterwarnings('ignore', category=UserWarning, module=r"^pywinauto\.")
 
 # -----------------------------------------------------------------------------
 # Configuration: adjust if your key bindings differ
@@ -163,7 +165,7 @@ def handle_controls(event_queue: multiprocessing.Queue):
                     # key released this frame
                     ks = KEY_STRINGS[i]
                     down_str = str(down_times[i] - time.time())
-                print("keystroke ", ks, down_str)
+                # print("keystroke ", ks, down_str)
                 try:
                     hollow_knight_window.send_keystrokes(ks)
                 except Exception as e:
